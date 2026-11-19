@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useTotalUnread } from "@/hooks/use-total-unread";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
+import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 import {
   Bell,
   Bot,
@@ -204,6 +205,9 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        {/* WhatsApp Workspace / Number Switcher */}
+        <WorkspaceSwitcher />
 
         {/* Main navigation */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">
