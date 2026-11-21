@@ -32,6 +32,12 @@ import {
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
 import { applyMessageStatus } from '@/lib/whatsapp/message-status-sync'
+import {
+  sendDepartmentListMenu,
+  handleDepartmentSelection,
+  getActiveComplaintSession,
+  processAndForwardComplaint,
+} from '@/lib/complaints/complaint-service'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -416,7 +422,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // Default ON: the column is NOT NULL DEFAULT TRUE, but a row
           // read before migration 039 lands would have it undefined,
           // and losing attachments is the failure mode worth avoiding.
-          config.mirror_inbound_media !== false
+          config.mirror_inbound_media !== false,
+          config.phone_number_id
         )
       }
     }
@@ -603,7 +610,8 @@ async function processMessage(
   accessToken: string,
   // Per-account opt-out for the inbound-media mirror (migration 039).
   // See parseMessageContent for what it turns off.
-  mirrorMedia: boolean
+  mirrorMedia: boolean,
+  phoneNumberId?: string
 ) {
   // Phone number OR business-scoped user ID — Meta sends only the
   // latter for a sender who has adopted a WhatsApp username (#519).
@@ -807,6 +815,55 @@ async function processMessage(
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
+
+  // ============================================================
+  // Village Civic Complaints Handling & Department Forwarding
+  // ============================================================
+  const citizenPhone = contactRecord.phone || message.from
+  if (phoneNumberId && citizenPhone) {
+    const creds = { phoneNumberId, accessToken }
+    let complaintHandled = false
+
+    // 1. Citizen tapped "हाँ" (complaint_yes) -> Send Department Selection Menu
+    if (interactiveReplyId === 'complaint_yes') {
+      await sendDepartmentListMenu(creds, citizenPhone)
+      complaintHandled = true
+    }
+    // 2. Citizen selected a department (dept_water, dept_electricity, dept_road, dept_clean)
+    else if (interactiveReplyId && interactiveReplyId.startsWith('dept_')) {
+      await handleDepartmentSelection({
+        creds,
+        accountId,
+        contactId: contactRecord.id,
+        citizenPhone,
+        departmentId: interactiveReplyId,
+      })
+      complaintHandled = true
+    }
+    // 3. Citizen sent details/photo while in an active complaint session
+    else {
+      const activeSession = await getActiveComplaintSession(contactRecord.id)
+      if (activeSession) {
+        await processAndForwardComplaint({
+          creds,
+          accountId,
+          contactId: contactRecord.id,
+          conversationId: conversation.id,
+          citizenPhone,
+          citizenName: contactRecord.name,
+          description: contentText,
+          mediaUrl,
+          mediaType,
+          session: activeSession,
+        })
+        complaintHandled = true
+      }
+    }
+
+    if (complaintHandled) {
+      return
+    }
+  }
 
   // ============================================================
   // Flow runner dispatch.
