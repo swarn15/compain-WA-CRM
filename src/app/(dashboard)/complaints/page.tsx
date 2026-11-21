@@ -438,9 +438,16 @@ export default function ComplaintsPage() {
                           <Phone className="w-3.5 h-3.5 text-emerald-500" />
                           <span className="font-mono">+{item.officer_phone}</span>
                         </div>
-                        {item.forwarded_to_officer && (
+                        {item.forwarded_to_officer ? (
                           <span className="inline-block mt-0.5 text-[10px] text-emerald-600 font-medium">
                             ✅ व्हाट्सएप फॉरवर्डेड
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-block mt-0.5 text-[10px] text-amber-600 font-medium cursor-help"
+                            title="अधिकारी के नंबर से 24 घंटे में कोई मैसेज नहीं आया था इसलिए मेटा ने डिलीवरी रोकी। अधिकारी द्वारा 'Hi' भेजने या टेम्पलेट अप्रूव होने पर यह स्वतः डिलीवर होगा।"
+                          >
+                            ⚠️ 24h विंडो बंद (चैट शुरू करें)
                           </span>
                         )}
                       </td>

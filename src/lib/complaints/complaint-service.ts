@@ -1,4 +1,4 @@
-import { sendTextMessage, sendMediaMessage } from '@/lib/whatsapp/meta-api'
+import { sendTextMessage, sendMediaMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { createClient } from '@supabase/supabase-js'
 
 export const DEPARTMENTS: Record<
@@ -232,7 +232,7 @@ export async function processAndForwardComplaint(args: {
   })
 
   // 1. Save complaint record in DB
-  await db.from('complaints').insert({
+  const { data: insertedComplaint } = await db.from('complaints').insert({
     account_id: args.accountId,
     contact_id: args.contactId,
     conversation_id: args.conversationId,
@@ -246,8 +246,8 @@ export async function processAndForwardComplaint(args: {
     media_url: args.mediaUrl,
     media_type: args.mediaType,
     status: 'open',
-    forwarded_to_officer: true,
-  })
+    forwarded_to_officer: false,
+  }).select('id').single()
 
   // 2. Remove the session so subsequent messages don't loop
   await db
@@ -256,6 +256,30 @@ export async function processAndForwardComplaint(args: {
     .eq('contact_id', args.contactId)
 
   // 3. Forward Alert to Department Officer
+  let forwardedSuccessfully = false
+
+  // 3a. Try pre-approved WhatsApp Utility Template (works 24x7 without prior chat window)
+  try {
+    await sendTemplateMessage({
+      phoneNumberId: args.creds.phoneNumberId,
+      accessToken: args.creds.accessToken,
+      to: dept.phone,
+      templateName: 'panchayat_complaint_alert',
+      language: 'hi',
+      params: [
+        `#${complaintNumber}`,
+        dept.name,
+        `+${args.citizenPhone}`,
+        (args.description || 'फोटो संलग्न की गई है').slice(0, 100),
+      ],
+    })
+    forwardedSuccessfully = true
+    console.log(`[complaints] Forwarded template alert #${complaintNumber} to officer ${dept.phone}`)
+  } catch (templateErr) {
+    console.log(`[complaints] Template alert not available or pending approval:`, (templateErr as Error)?.message)
+  }
+
+  // 3b. Also send direct text alert (rich layout, works inside 24-hr window)
   const officerAlertText = `🚨 नई जन शिकायत अलर्ट (ग्राम पंचायत ललितपुर)\n─────────────────────────\n📋 शिकायत क्रमांक: #${complaintNumber}\n🏢 विभाग: ${dept.icon} ${dept.name}\n👤 नागरिक फोन: +${args.citizenPhone} (${args.citizenName || 'नागरिक'})\n📝 विवरण: "${args.description || 'फोटो संलग्न की गई है'}"\n📅 समय: ${timeFormatted}\n─────────────────────────\nकृपया प्राथमिकता के आधार पर संज्ञान लें।`
 
   try {
@@ -265,9 +289,10 @@ export async function processAndForwardComplaint(args: {
       to: dept.phone,
       text: officerAlertText,
     })
+    forwardedSuccessfully = true
     console.log(`[complaints] Forwarded text alert #${complaintNumber} to officer ${dept.phone}`)
   } catch (err) {
-    console.error(`[complaints] Failed to send text alert to officer ${dept.phone}:`, err)
+    console.error(`[complaints] Free-text alert to officer ${dept.phone} failed (outside 24h window):`, (err as Error)?.message)
   }
 
   // 4. If image exists, forward image to officer with caption
@@ -281,10 +306,19 @@ export async function processAndForwardComplaint(args: {
         link: args.mediaUrl,
         caption: `📸 शिकायत #${complaintNumber} की फोटो (नागरिक: +${args.citizenPhone})`,
       })
+      forwardedSuccessfully = true
       console.log(`[complaints] Forwarded image #${complaintNumber} to officer ${dept.phone}`)
     } catch (err) {
-      console.error(`[complaints] Failed to forward image to officer:`, err)
+      console.error(`[complaints] Failed to forward image to officer:`, (err as Error)?.message)
     }
+  }
+
+  // Update complaint row with real forwarding status
+  if (forwardedSuccessfully && insertedComplaint?.id) {
+    await db
+      .from('complaints')
+      .update({ forwarded_to_officer: true })
+      .eq('id', insertedComplaint.id)
   }
 
   // 5. Send confirmation back to citizen
