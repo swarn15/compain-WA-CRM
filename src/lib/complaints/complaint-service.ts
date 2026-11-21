@@ -266,7 +266,7 @@ export async function processAndForwardComplaint(args: {
   }
 
   // 5. Send confirmation back to citizen
-  const citizenConfirmation = `✅ आपकी शिकायत सफलतापूर्वक दर्ज कर ली गई है!\n\n📋 शिकायत संख्या: #${complaintNumber}\n🏢 विभाग: ${dept.icon} ${dept.name}\n\nआपकी शिकायत ${args.mediaUrl ? 'और फोटो ' : ''}संबंधित अधिकारी को भेज दी गई है। शीघ्र ही समस्या का समाधान किया जाएगा।\n\n(भविष्य में नई शिकायत के लिए कभी भी 'Hi' या 'शिकायत' लिखकर भेजें)`
+  const citizenConfirmation = `✅ आपकी शिकायत सफलतापूर्वक दर्ज कर ली गई है!\n\n📋 शिकायत संख्या: #${complaintNumber}\n🏢 विभाग: ${dept.icon} ${dept.name}\n\nआपकी शिकायत ${args.mediaUrl ? 'और फोटो ' : ''}संबंधित ${dept.name} अधिकारी (+${dept.phone}) को भेज दी गई है। शीघ्र ही समस्या का समाधान किया जाएगा।\n\n(भविष्य में नई शिकायत के लिए कभी भी 'Hi' या 'शिकायत' लिखकर भेजें)`
 
   try {
     await sendTextMessage({
@@ -277,6 +277,38 @@ export async function processAndForwardComplaint(args: {
     })
   } catch (err) {
     console.error('[complaints] Failed to send confirmation to citizen:', err)
+  }
+
+  // 6. Record messages in CRM conversation so admin can see audit & confirmation in /inbox
+  try {
+    await db.from('messages').insert([
+      {
+        conversation_id: args.conversationId,
+        sender_type: 'bot',
+        content_type: 'text',
+        content_text: citizenConfirmation,
+        status: 'delivered',
+        created_at: new Date().toISOString(),
+      },
+      {
+        conversation_id: args.conversationId,
+        sender_type: 'bot',
+        content_type: 'text',
+        content_text: `📢 [सिस्टम ऑडिट अलर्ट]: शिकायत #${complaintNumber} दर्ज कर संबंधित ${dept.name} अधिकारी (+${dept.phone}) के WhatsApp पर सफलतापूर्वक फॉरवर्ड कर दी गई है।`,
+        status: 'delivered',
+        created_at: new Date(Date.now() + 1000).toISOString(),
+      },
+    ])
+
+    await db
+      .from('conversations')
+      .update({
+        last_message_text: `[शिकायत #${complaintNumber}]: ${dept.name}`,
+        last_message_at: new Date().toISOString(),
+      })
+      .eq('id', args.conversationId)
+  } catch (dbErr) {
+    console.error('[complaints] Failed to record audit in CRM conversation:', dbErr)
   }
 
   return true

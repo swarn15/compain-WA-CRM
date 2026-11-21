@@ -11,6 +11,7 @@ import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
 import {
   Bell,
   Bot,
+  ClipboardList,
   Crown,
   GitBranch,
   LayoutDashboard,
@@ -82,17 +83,15 @@ import {
 interface NavItem {
   href: string;
   labelKey: string;
+  label?: string;
   icon: typeof LayoutDashboard;
-  /**
-   * When true, the nav row renders a small "Beta" chip after the label.
-   * Purely informational — doesn't affect routing or access.
-   */
   beta?: boolean;
 }
 
 const navItems: NavItem[] = [
   { href: "/dashboard", labelKey: "dashboard", icon: LayoutDashboard },
   { href: "/inbox", labelKey: "inbox", icon: MessageSquare },
+  { href: "/complaints", labelKey: "complaints", label: "जन शिकायतें", icon: ClipboardList },
   { href: "/notifications", labelKey: "notifications", icon: Bell },
   { href: "/contacts", labelKey: "contacts", icon: Users },
   { href: "/pipelines", labelKey: "pipelines", icon: GitBranch },
@@ -240,7 +239,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                     )}
                   >
                     <item.icon className="h-4 w-4" />
-                    <span className="flex-1">{t(item.labelKey as string)}</span>
+                    <span className="flex-1">{item.label || (t as any)(item.labelKey)}</span>
                     {item.beta && (
                       <span
                         aria-label={t("beta")}
