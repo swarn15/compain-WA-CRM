@@ -826,7 +826,7 @@ async function processMessage(
 
     // 1. Citizen tapped "हाँ" (complaint_yes) -> Send Department Selection Menu
     if (interactiveReplyId === 'complaint_yes') {
-      await sendDepartmentListMenu(creds, citizenPhone)
+      await sendDepartmentListMenu(creds, citizenPhone, accountId)
       complaintHandled = true
     }
     // 2. Citizen selected a department (dept_water, dept_electricity, dept_road, dept_clean)

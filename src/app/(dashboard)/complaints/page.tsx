@@ -13,11 +13,24 @@ import {
   Search,
   Filter,
   RefreshCw,
+  Settings,
+  Save,
+  Loader2,
 } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { getDateLocale } from "@/i18n/date-locale";
 import { useLocale } from "next-intl";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 interface Complaint {
   id: string;
@@ -35,6 +48,45 @@ interface Complaint {
   conversation_id?: string;
 }
 
+interface Department {
+  id: string;
+  name: string;
+  icon: string;
+  phone: string;
+  title: string;
+}
+
+const DEFAULT_DEPTS: Department[] = [
+  {
+    id: "dept_water",
+    name: "पेयजल (पानी)",
+    icon: "💧",
+    title: "जल निगम / हैंडपंप मरम्मत अधिकारी",
+    phone: "919452600081",
+  },
+  {
+    id: "dept_electricity",
+    name: "बिजली / स्ट्रीट लाइट",
+    icon: "💡",
+    title: "विद्युत विभाग / लाइनमैन",
+    phone: "919005600081",
+  },
+  {
+    id: "dept_road",
+    name: "सड़क / नाली मरम्मत",
+    icon: "🛣️",
+    title: "सड़क व नाली निर्माण अधिकारी",
+    phone: "918318928330",
+  },
+  {
+    id: "dept_clean",
+    name: "ग्राम सफाई व स्वच्छता",
+    icon: "🧹",
+    title: "सफाई कर्मचारी / स्वच्छता सुपरवाइजर",
+    phone: "918957739959",
+  },
+];
+
 const DEPT_ICONS: Record<string, string> = {
   dept_water: "💧",
   dept_electricity: "💡",
@@ -50,6 +102,30 @@ export default function ComplaintsPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // Department settings modal state
+  const [departments, setDepartments] = useState<Department[]>(DEFAULT_DEPTS);
+  const [editDepts, setEditDepts] = useState<Department[]>(DEFAULT_DEPTS);
+  const [showDeptModal, setShowDeptModal] = useState(false);
+  const [savingDepts, setSavingDepts] = useState(false);
+
+  const fetchDepartments = useCallback(async () => {
+    if (!accountId) return;
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("village_departments")
+      .select("*")
+      .eq("account_id", accountId);
+
+    if (!error && data && data.length > 0) {
+      const merged = DEFAULT_DEPTS.map((def) => {
+        const found = data.find((d: Department) => d.id === def.id);
+        return found ? { ...def, ...found } : def;
+      });
+      setDepartments(merged);
+      setEditDepts(merged);
+    }
+  }, [accountId]);
 
   const fetchComplaints = useCallback(async () => {
     if (!accountId) return;
@@ -69,7 +145,56 @@ export default function ComplaintsPage() {
 
   useEffect(() => {
     fetchComplaints();
-  }, [fetchComplaints]);
+    fetchDepartments();
+  }, [fetchComplaints, fetchDepartments]);
+
+  const handleOpenDeptModal = () => {
+    setEditDepts(departments);
+    setShowDeptModal(true);
+  };
+
+  const handlePhoneChange = (id: string, newPhone: string) => {
+    setEditDepts((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, phone: newPhone } : d))
+    );
+  };
+
+  const handleSaveDepartments = async () => {
+    if (!accountId) return;
+    setSavingDepts(true);
+    const supabase = createClient();
+
+    const updates = editDepts.map((d) => {
+      let clean = d.phone.replace(/[^0-9]/g, "");
+      if (clean.length === 10) {
+        clean = "91" + clean;
+      }
+      return {
+        account_id: accountId,
+        id: d.id,
+        name: d.name,
+        icon: d.icon,
+        title: d.title,
+        phone: clean,
+        updated_at: new Date().toISOString(),
+      };
+    });
+
+    const { error } = await supabase
+      .from("village_departments")
+      .upsert(updates, { onConflict: "account_id,id" });
+
+    if (error) {
+      console.error("Failed to update departments:", error);
+      toast.error("नंबर सुरक्षित करने में त्रुटि: " + error.message);
+    } else {
+      toast.success("अधिकारी नंबर सफलतापूर्वक अपडेट हो गए!");
+      setDepartments(editDepts);
+      setShowDeptModal(false);
+      fetchDepartments();
+    }
+    setSavingDepts(false);
+  };
 
   const updateStatus = async (
     id: string,
@@ -86,6 +211,9 @@ export default function ComplaintsPage() {
       setComplaints((prev) =>
         prev.map((c) => (c.id === id ? { ...c, status: newStatus } : c))
       );
+      toast.success("स्थिति अपडेट हो गई!");
+    } else {
+      toast.error("स्थिति अपडेट विफल रही");
     }
     setUpdatingId(null);
   };
@@ -129,16 +257,60 @@ export default function ComplaintsPage() {
           </p>
         </div>
 
-        <button
-          onClick={fetchComplaints}
-          disabled={loading}
-          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border bg-card hover:bg-accent transition"
-        >
-          <RefreshCw
-            className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
-          />
-          रिफ्रेश करें
-        </button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={fetchComplaints}
+            disabled={loading}
+            className="flex items-center gap-2"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            रिफ्रेश करें
+          </Button>
+
+          <Button
+            onClick={handleOpenDeptModal}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-2 shadow-sm"
+          >
+            <Settings className="w-4 h-4" />
+            अधिकारी नंबर बदलें
+          </Button>
+        </div>
+      </div>
+
+      {/* Departments Overview Cards */}
+      <div className="rounded-xl border bg-card/60 p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <span>📢</span> वर्तमान शिकायत फॉरवर्डिंग विभाग एवं अधिकारी नंबर
+          </h2>
+          <button
+            onClick={handleOpenDeptModal}
+            className="text-xs text-emerald-600 hover:underline font-medium"
+          >
+            नंबर बदलें ➔
+          </button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+          {departments.map((dept) => (
+            <div
+              key={dept.id}
+              className="p-3 rounded-lg border bg-background flex flex-col justify-between space-y-1 hover:border-emerald-500/50 transition"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xl">{dept.icon}</span>
+                <span className="font-semibold text-sm">{dept.name}</span>
+              </div>
+              <div className="text-xs text-muted-foreground truncate">
+                {dept.title}
+              </div>
+              <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-emerald-600 pt-1">
+                <Phone className="w-3.5 h-3.5" />
+                +{dept.phone}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -319,6 +491,88 @@ export default function ComplaintsPage() {
           </div>
         )}
       </div>
+
+      {/* Officer Numbers Modal */}
+      <Dialog
+        open={showDeptModal}
+        onOpenChange={(open) => !savingDepts && setShowDeptModal(open)}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <Settings className="w-5 h-5 text-emerald-600" />
+              विभाग एवं अधिकारी WhatsApp नंबर बदलें
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              जब कोई नागरिक शिकायत दर्ज करेगा, तो सिस्टम स्वचालित रूप से इन नंबरों पर शिकायत का विवरण और फोटो भेजेगा।
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {editDepts.map((d) => (
+              <div
+                key={d.id}
+                className="p-3 rounded-lg border bg-muted/20 space-y-2"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-sm flex items-center gap-2">
+                    <span>{d.icon}</span> {d.name}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {d.title}
+                  </span>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground block mb-1">
+                    अधिकारी / कर्मचारी WhatsApp नंबर (देश कोड 91 के साथ):
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted-foreground">
+                      +
+                    </span>
+                    <input
+                      type="text"
+                      value={d.phone}
+                      onChange={(e) => handlePhoneChange(d.id, e.target.value)}
+                      placeholder="91XXXXXXXXXX"
+                      className="w-full pl-7 pr-3 py-1.5 text-sm font-mono rounded-md border bg-background focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <DialogFooter className="flex gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={savingDepts}
+              onClick={() => setShowDeptModal(false)}
+            >
+              रद्द करें
+            </Button>
+            <Button
+              type="button"
+              disabled={savingDepts}
+              onClick={handleSaveDepartments}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-2"
+            >
+              {savingDepts ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  सुरक्षित हो रहा है...
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  सुरक्षित करें (Save)
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

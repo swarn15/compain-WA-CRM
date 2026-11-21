@@ -59,6 +59,24 @@ function getDb(): any {
   return _adminClient
 }
 
+export async function getAccountDepartments(accountId?: string) {
+  if (!accountId) return DEPARTMENTS
+  const db = getDb()
+  const { data } = await db
+    .from('village_departments')
+    .select('*')
+    .eq('account_id', accountId)
+
+  if (!data || data.length === 0) return DEPARTMENTS
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const map: Record<string, any> = {}
+  for (const row of data) {
+    map[row.id] = row
+  }
+  return map
+}
+
 interface MetaCredentials {
   phoneNumberId: string
   accessToken: string
@@ -69,8 +87,10 @@ interface MetaCredentials {
  */
 export async function sendDepartmentListMenu(
   creds: MetaCredentials,
-  citizenPhone: string
+  citizenPhone: string,
+  accountId?: string
 ) {
+  const depts = await getAccountDepartments(accountId)
   const url = `https://graph.facebook.com/v21.0/${creds.phoneNumberId}/messages`
   const body = {
     messaging_product: 'whatsapp',
@@ -93,10 +113,10 @@ export async function sendDepartmentListMenu(
         sections: [
           {
             title: 'ग्राम पंचायत विभाग',
-            rows: Object.values(DEPARTMENTS).map((d) => ({
+            rows: Object.values(depts).map((d: any) => ({
               id: d.id,
-              title: d.title.slice(0, 24),
-              description: d.description.slice(0, 72),
+              title: (d.title || d.name).slice(0, 24),
+              description: (d.description || '').slice(0, 72),
             })),
           },
         ],
@@ -129,7 +149,8 @@ export async function handleDepartmentSelection(args: {
   citizenPhone: string
   departmentId: string
 }) {
-  const dept = DEPARTMENTS[args.departmentId]
+  const depts = await getAccountDepartments(args.accountId)
+  const dept = depts[args.departmentId]
   if (!dept) return false
 
   const db = getDb()
@@ -191,7 +212,8 @@ export async function processAndForwardComplaint(args: {
     department_label: string
   }
 }) {
-  const dept = DEPARTMENTS[args.session.department]
+  const depts = await getAccountDepartments(args.accountId)
+  const dept = depts[args.session.department]
   if (!dept) return false
 
   const db = getDb()
