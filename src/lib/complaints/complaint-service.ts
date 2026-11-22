@@ -296,21 +296,22 @@ export async function processAndForwardComplaint(args: {
     console.error(`[complaints] Free-text alert to officer ${dept.phone} failed (outside 24h window):`, (err as Error)?.message)
   }
 
-  // 4. If image exists, forward image to officer with caption
+  // 4. If media exists (image or audio), forward media to officer
   if (args.mediaUrl && args.mediaUrl.startsWith('http')) {
     try {
+      const isAudio = args.mediaType?.includes('audio')
       await sendMediaMessage({
         phoneNumberId: args.creds.phoneNumberId,
         accessToken: args.creds.accessToken,
         to: dept.phone,
-        kind: 'image',
+        kind: isAudio ? 'audio' : 'image',
         link: args.mediaUrl,
-        caption: `📸 शिकायत #${complaintNumber} की फोटो (नागरिक: +${args.citizenPhone})`,
+        caption: isAudio ? undefined : `📸 शिकायत #${complaintNumber} की फोटो (नागरिक: +${args.citizenPhone})`,
       })
       forwardedSuccessfully = true
-      console.log(`[complaints] Forwarded image #${complaintNumber} to officer ${dept.phone}`)
+      console.log(`[complaints] Forwarded media (${isAudio ? 'audio' : 'image'}) #${complaintNumber} to officer ${dept.phone}`)
     } catch (err) {
-      console.error(`[complaints] Failed to forward image to officer:`, (err as Error)?.message)
+      console.error(`[complaints] Failed to forward media to officer:`, (err as Error)?.message)
     }
   }
 
@@ -323,7 +324,9 @@ export async function processAndForwardComplaint(args: {
   }
 
   // 5. Send confirmation back to citizen
-  const citizenConfirmation = `✅ आपकी शिकायत सफलतापूर्वक दर्ज कर ली गई है!\n\n📋 शिकायत संख्या: #${complaintNumber}\n🏢 विभाग: ${dept.icon} ${dept.name}\n\nआपकी शिकायत ${args.mediaUrl ? 'और फोटो ' : ''}संबंधित ${dept.name} अधिकारी (+${dept.phone}) को भेज दी गई है। शीघ्र ही समस्या का समाधान किया जाएगा।\n\n(भविष्य में नई शिकायत के लिए कभी भी 'Hi' या 'शिकायत' लिखकर भेजें)`
+  const isAudioMsg = args.mediaType?.includes('audio')
+  const mediaNote = isAudioMsg ? ' (ऑडियो संदेश सुनकर)' : args.mediaUrl ? ' और फोटो' : ''
+  const citizenConfirmation = `✅ आपकी शिकायत${mediaNote} सफलतापूर्वक दर्ज कर ली गई है!\n\n📋 शिकायत संख्या: #${complaintNumber}\n🏢 विभाग: ${dept.icon} ${dept.name}\n\nआपकी शिकायत संबंधित ${dept.name} अधिकारी (+${dept.phone}) को भेज दी गई है। शीघ्र ही समस्या का समाधान किया जाएगा।\n\n(भविष्य में नई शिकायत के लिए कभी भी लिखकर या ऑडियो भेजें)`
 
   try {
     await sendTextMessage({

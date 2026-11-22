@@ -22,6 +22,8 @@ import { readCappedBody } from '@/lib/whatsapp/webhook-body'
 import { resumeAwaitingReply, runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { transcribeAudio } from '@/lib/ai/transcribe'
+import { loadAiConfig } from '@/lib/ai/config'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   applyBroadcastRecipientStatus,
@@ -677,7 +679,8 @@ async function processMessage(
   } = await parseMessageContent(
     message,
     accessToken,
-    mirrorMedia ? { accountId } : null
+    mirrorMedia ? { accountId } : null,
+    accountId
   )
 
   // Resolve swipe-reply context if present. A missing parent is fine —
@@ -1040,7 +1043,8 @@ async function parseMessageContent(
   accessToken: string,
   // Tenancy + opt-out for the media mirror. Null disables mirroring
   // entirely, which is what the account-level toggle does.
-  mirror: { accountId: string } | null
+  mirror: { accountId: string } | null,
+  accountId?: string
 ): Promise<{
   contentText: string | null
   mediaUrl: string | null
@@ -1181,9 +1185,35 @@ async function parseMessageContent(
 
     case 'audio':
       if (message.audio?.id) {
+        const audioUrl = await verifyAndBuildUrl(message.audio.id)
+        let transcribedText: string | null = null
+
+        // Transcribe voice note using Groq Whisper Speech-to-Text
+        const targetAccountId = accountId || mirror?.accountId
+        if (targetAccountId) {
+          try {
+            const aiConfig = await loadAiConfig(supabaseAdmin(), targetAccountId)
+            if (aiConfig?.apiKey) {
+              const info = await getMediaUrl({ mediaId: message.audio.id, accessToken })
+              const { buffer } = await downloadMedia({ downloadUrl: info.url, accessToken })
+              transcribedText = await transcribeAudio({
+                buffer,
+                mimeType: message.audio.mime_type,
+                apiKey: aiConfig.apiKey,
+              })
+              if (transcribedText) {
+                console.log(`[webhook] Voice note transcribed via Whisper: "${transcribedText}"`)
+              }
+            }
+          } catch (transcribeErr) {
+            console.error('[webhook] Voice note transcription failed:', transcribeErr)
+          }
+        }
+
         return {
           ...empty,
-          mediaUrl: await verifyAndBuildUrl(message.audio.id),
+          contentText: transcribedText,
+          mediaUrl: audioUrl,
           mediaType: message.audio.mime_type,
         }
       }
