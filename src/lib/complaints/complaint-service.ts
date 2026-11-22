@@ -1,5 +1,6 @@
 import { sendTextMessage, sendMediaMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { createClient } from '@supabase/supabase-js'
+import { loadAiConfig } from '@/lib/ai/config'
 
 export const DEPARTMENTS: Record<
   string,
@@ -368,4 +369,192 @@ export async function processAndForwardComplaint(args: {
   }
 
   return true
+}
+
+/**
+ * Smart AI Complaint Intake & Photo Auto-Attachment:
+ * 1. If citizen sends a photo and had a complaint filed within the last 15 minutes,
+ *    it auto-attaches the photo to that complaint and forwards to the officer.
+ * 2. If citizen sends a natural language message describing a civic problem,
+ *    it uses Groq AI to classify the department, registers the complaint,
+ *    forwards to the officer, and replies with confirmation + invites photo upload.
+ */
+export async function tryAiComplaintIntake(args: {
+  creds: MetaCredentials
+  accountId: string
+  contactId: string
+  conversationId: string
+  citizenPhone: string
+  citizenName?: string
+  text?: string
+  mediaUrl?: string | null
+  mediaType?: string | null
+}): Promise<boolean> {
+  const db = getDb()
+
+  // 1. If media (photo) is sent, check for a recent complaint in the last 15 mins without a photo
+  if (args.mediaUrl && args.mediaUrl.startsWith('http')) {
+    try {
+      const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+      const { data: recent } = await db
+        .from('complaints')
+        .select('*')
+        .eq('account_id', args.accountId)
+        .eq('citizen_phone', args.citizenPhone)
+        .is('media_url', null)
+        .gte('created_at', fifteenMinsAgo)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (recent) {
+        // Update complaint with photo
+        await db
+          .from('complaints')
+          .update({
+            media_url: args.mediaUrl,
+            media_type: args.mediaType || 'image',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', recent.id)
+
+        // Forward photo to officer
+        await sendMediaMessage({
+          phoneNumberId: args.creds.phoneNumberId,
+          accessToken: args.creds.accessToken,
+          to: recent.officer_phone,
+          kind: 'image',
+          link: args.mediaUrl,
+          caption: `📸 शिकायत #${recent.complaint_number} की फोटो (नागरिक: +${args.citizenPhone})`,
+        })
+
+        // Send confirmation to citizen
+        await sendTextMessage({
+          phoneNumberId: args.creds.phoneNumberId,
+          accessToken: args.creds.accessToken,
+          to: args.citizenPhone,
+          text: `📸 आपकी फोटो प्राप्त हो गई है और इसे शिकायत #${recent.complaint_number} के साथ संबंधित अधिकारी को भेज दिया गया है। धन्यवाद!`,
+        })
+
+        return true
+      }
+    } catch (err) {
+      console.error('[complaints] Failed in photo auto-attach:', err)
+    }
+  }
+
+  // 2. If no text or text is too short, cannot classify
+  const text = args.text?.trim()
+  if (!text || text.length < 5) return false
+
+  // Don't auto-classify pure greetings
+  const lower = text.toLowerCase()
+  if (['hi', 'hello', 'hey', 'namaste', 'नमस्ते', 'प्रणाम', 'ram ram', 'राम राम'].includes(lower)) {
+    return false
+  }
+
+  // 3. Load AI config
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let aiConfig: any = null
+  try {
+    aiConfig = await loadAiConfig(db, args.accountId)
+  } catch (err) {
+    console.error('[complaints] Failed to load AI config:', err)
+  }
+  if (!aiConfig || !aiConfig.apiKey) return false
+
+  const baseUrl = aiConfig.baseUrl
+    ? aiConfig.baseUrl.replace(/\/+$/, '')
+    : 'https://api.groq.com/openai/v1'
+  const endpoint = `${baseUrl}/chat/completions`
+
+  try {
+    const aiRes = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${aiConfig.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: aiConfig.model || 'openai/gpt-oss-120b',
+        messages: [
+          {
+            role: 'system',
+            content: `You are an AI civic classifier for Gram Panchayat Lalitpur.
+Analyze the user message to determine if it is reporting a civic issue/problem.
+Allowed departments:
+- dept_water: drinking water, handpumps, pipeline leakage, well, tank, water supply
+- dept_electricity: light outage, fallen wire/pole, transformer, street lights
+- dept_road: broken road, potholes, drain/drainage blockage, road construction
+- dept_clean: garbage dumps, uncleaned streets, foul smell, sanitation
+
+If it is a civic problem/complaint, return JSON:
+{
+  "is_complaint": true,
+  "department": "dept_water" | "dept_electricity" | "dept_road" | "dept_clean",
+  "summary": "1-sentence summary of the issue in clean Hindi"
+}
+If it is a general inquiry, scheme info, question, or greeting, return:
+{
+  "is_complaint": false
+}
+Return ONLY valid JSON.`,
+          },
+          { role: 'user', content: text },
+        ],
+        temperature: 0.1,
+      }),
+    })
+
+    if (!aiRes.ok) {
+      console.error('[complaints] AI classification HTTP error:', aiRes.status)
+      return false
+    }
+
+    const aiData = await aiRes.json()
+    const rawContent = aiData?.choices?.[0]?.message?.content?.trim()
+    if (!rawContent) return false
+
+    // Parse JSON safely
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let parsed: any = null
+    try {
+      const cleaned = rawContent.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim()
+      parsed = JSON.parse(cleaned)
+    } catch {
+      console.log('[complaints] Failed to parse AI JSON:', rawContent)
+      return false
+    }
+
+    if (!parsed || !parsed.is_complaint || !parsed.department) {
+      return false
+    }
+
+    const depts = await getAccountDepartments(args.accountId)
+    const dept = depts[parsed.department]
+    if (!dept) return false
+
+    // AI confirmed civic complaint! Process and forward immediately!
+    await processAndForwardComplaint({
+      creds: args.creds,
+      accountId: args.accountId,
+      contactId: args.contactId,
+      conversationId: args.conversationId,
+      citizenPhone: args.citizenPhone,
+      citizenName: args.citizenName,
+      description: parsed.summary ? `${parsed.summary} (नागरिक संदेश: "${text}")` : text,
+      mediaUrl: args.mediaUrl,
+      mediaType: args.mediaType,
+      session: {
+        department: dept.id,
+        department_label: dept.name,
+      },
+    })
+
+    console.log(`[complaints] AI successfully recognized and forwarded complaint to ${dept.name}`)
+    return true
+  } catch (err) {
+    console.error('[complaints] Error in tryAiComplaintIntake:', err)
+    return false
+  }
 }

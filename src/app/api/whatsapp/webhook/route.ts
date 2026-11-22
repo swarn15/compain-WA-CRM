@@ -37,6 +37,7 @@ import {
   handleDepartmentSelection,
   getActiveComplaintSession,
   processAndForwardComplaint,
+  tryAiComplaintIntake,
 } from '@/lib/complaints/complaint-service'
 
 // The `after()` callback in POST runs within this route's max duration.
@@ -857,6 +858,23 @@ async function processMessage(
           session: activeSession,
         })
         complaintHandled = true
+      }
+      // 4. Smart AI Complaint Intake & Photo Auto-Attachment
+      else if ((contentText && contentText.trim()) || mediaUrl) {
+        const handledByAi = await tryAiComplaintIntake({
+          creds,
+          accountId,
+          contactId: contactRecord.id,
+          conversationId: conversation.id,
+          citizenPhone,
+          citizenName: contactRecord.name ?? undefined,
+          text: contentText ?? undefined,
+          mediaUrl,
+          mediaType,
+        })
+        if (handledByAi) {
+          complaintHandled = true
+        }
       }
     }
 
